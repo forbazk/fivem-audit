@@ -34,7 +34,13 @@ export function grade(score: number): string {
   return score >= 90 ? 'A' : score >= 75 ? 'B' : score >= 60 ? 'C' : score >= 40 ? 'D' : 'F';
 }
 
-export function formatText(result: ScanResult, options: { color: boolean }): string {
+const UNSAFE = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200B-\u200D\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g;
+
+export function sanitize(value: string): string {
+  return value.replace(UNSAFE, (ch) => `\\u${ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`);
+}
+
+export function formatText(result: ScanResult, options: { color: boolean; verbose?: boolean }): string {
   const c = palette(options.color);
   const lines: string[] = [];
   const { stats } = result;
@@ -46,14 +52,20 @@ export function formatText(result: ScanResult, options: { color: boolean }): str
 
   for (const resource of result.resources) {
     if (resource.findings.length === 0) continue;
-    lines.push(`${c.bold(resource.name)}  ${c.score(resource.score, `${resource.score}/100 ${grade(resource.score)}`)}  ${c.dim(resource.path)}`);
+    lines.push(`${c.bold(sanitize(resource.name))}  ${c.score(resource.score, `${resource.score}/100 ${grade(resource.score)}`)}  ${c.dim(sanitize(resource.path))}`);
     for (const f of resource.findings) {
       const label = c.severity(f.severity, ` ${f.severity.toUpperCase()} `.padEnd(10));
-      lines.push(`  ${label} ${c.dim(f.ruleId)}  ${f.message}`);
-      lines.push(`  ${' '.repeat(10)} ${c.dim(`${f.file}:${f.line}:${f.column}`)}`);
-      const snippet = f.snippet.trim();
+      lines.push(`  ${label} ${c.dim(f.ruleId)}  ${sanitize(f.message)}`);
+      lines.push(`  ${' '.repeat(10)} ${c.dim(sanitize(`${f.file}:${f.line}:${f.column}`))}`);
+      const snippet = sanitize(f.snippet.trim());
       if (snippet !== '') lines.push(`  ${' '.repeat(10)} ${c.dim('│')} ${snippet.length > 140 ? `${snippet.slice(0, 139)}…` : snippet}`);
     }
+    lines.push('');
+  }
+
+  if (options.verbose && result.skipped.length > 0) {
+    lines.push(c.bold('Skipped'));
+    for (const s of result.skipped) lines.push(`  ${c.dim(s.reason.padEnd(10))} ${sanitize(s.path)}`);
     lines.push('');
   }
 

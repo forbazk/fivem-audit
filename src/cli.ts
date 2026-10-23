@@ -25,7 +25,8 @@ Options
   -i, --ignore <glob>              Ignore paths matching the glob (repeatable)
       --max-file-size <kb>         Skip files larger than this (default: 2048)
   -j, --concurrency <n>            Files read in parallel (default: auto)
-      --no-color                   Disable colors
+      --no-color                   Disable colors (NO_COLOR and FORCE_COLOR are honoured)
+      --verbose                    List skipped files and the reason
       --list-rules                 Print the rule catalog and exit
   -h, --help                       Show this help
   -v, --version                    Show the version
@@ -75,6 +76,7 @@ async function main(argv: string[]): Promise<number> {
       'max-file-size': { type: 'string' },
       concurrency: { type: 'string', short: 'j' },
       'no-color': { type: 'boolean' },
+      verbose: { type: 'boolean' },
       'list-rules': { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
@@ -113,8 +115,9 @@ async function main(argv: string[]): Promise<number> {
     ...(concurrency === undefined ? {} : { concurrency }),
   });
 
-  const color = format === 'text' && values.output === undefined && !values['no-color'] && process.stdout.isTTY === true && process.env.NO_COLOR === undefined;
-  const report = format === 'json' ? formatJson(result) : format === 'sarif' ? formatSarif(result) : formatText(result, { color });
+  const forced = process.env.FORCE_COLOR !== undefined && process.env.FORCE_COLOR !== '0';
+  const color = format === 'text' && values.output === undefined && !values['no-color'] && process.env.NO_COLOR === undefined && (forced || process.stdout.isTTY === true);
+  const report = format === 'json' ? formatJson(result) : format === 'sarif' ? formatSarif(result) : formatText(result, { color, verbose: values.verbose === true });
 
   if (values.output === undefined) process.stdout.write(`${report}\n`);
   else await writeFile(values.output, `${report}\n`, 'utf8');

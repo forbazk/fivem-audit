@@ -4,15 +4,17 @@ Static security scanner for FiveM resources. Point it at your `resources` folder
 
 - **Zero runtime dependencies.** Nothing to trust but Node.js itself.
 - **Never executes what it scans.** Files are only read and tokenized; symlinks are not followed.
-- **Understands Lua and JavaScript.** Comments and string contents are masked by a real lexer, so a `load()` inside a comment is not a finding and a `PerformHttpRequest` hidden in `\x50\x65…` escapes is.
+- **Understands Lua, JavaScript and NUI pages.** Comments and string contents are masked by a real lexer, so a `load()` inside a comment is not a finding and a `PerformHttpRequest` hidden in `\x50\x65…` escapes is. Inline `<script>` blocks in `.html` files are analyzed too.
+- **Hard to fool.** Sees through `_G.load`, `window.eval`, aliased loaders, named HTTP callbacks, values copied into local variables and Trojan Source bidirectional characters.
 - **Manifest aware.** `fxmanifest.lua` globs decide which files run on the server, so client-only code does not raise server-side alerts.
+- **Safe output.** Secrets are redacted in every snippet and terminal control sequences are neutralised, so a malicious file cannot leak or inject anything through the report.
 - **Fast.** 135 MB of Lua across 3,000 files in under 3 seconds on a desktop CPU.
 - **CI ready.** Text, JSON and SARIF output, meaningful exit codes, GitHub code scanning support.
 
 ```
 $ npx github:forbazk/fivem-audit ./resources
 
-fivem-audit 0.1.0  1 resource · 3 files · 1 KiB · 0.02s
+fivem-audit 0.2.0  1 resource · 3 files · 1 KiB · 0.02s
 
 vulnerable_shop  0/100 F  vulnerable_shop
    CRITICAL  FA003  string.char() builds "PerformHttpRequest" from 18 bytes
@@ -27,10 +29,12 @@ vulnerable_shop  0/100 F  vulnerable_shop
              vulnerable_shop/server/main.lua:7:3
    HIGH      FA001  load() compiles a runtime value in a file that also performs HTTP requests
              vulnerable_shop/server/main.lua:15:16
+   HIGH      FA010  Command "/shopcash" is unrestricted and calls addMoney() with player-supplied arguments without a permission check
+             vulnerable_shop/server/main.lua:20:11
    MEDIUM    FA004  Possible secret assigned to "LogApiKey"
              vulnerable_shop/config.lua:4:21
 
-Summary  3 critical · 3 high · 1 medium
+Summary  3 critical · 4 high · 1 medium
 ```
 
 The sample above comes from [`examples/vulnerable_shop`](examples/vulnerable_shop).
@@ -67,7 +71,8 @@ fivem-audit [paths...] [options]
   -i, --ignore <glob>              Ignore paths matching the glob (repeatable)
       --max-file-size <kb>         Skip files larger than this (default: 2048)
   -j, --concurrency <n>            Files read in parallel (default: auto)
-      --no-color                   Disable colors
+      --no-color                   Disable colors (NO_COLOR and FORCE_COLOR are honoured)
+      --verbose                    List skipped files and the reason
       --list-rules                 Print the rule catalog and exit
 ```
 
@@ -79,15 +84,17 @@ Each resource gets a score out of 100 (critical −40, high −15, medium −5, 
 
 | ID | Severity | Detects |
 | --- | --- | --- |
-| <a id="fa001"></a>FA001 | medium–high | `load`, `loadstring`, `dofile`, `eval`, `new Function` on runtime values. Escalated when the same file makes HTTP requests, lowered for constants and files bundled with the resource. |
-| <a id="fa002"></a>FA002 | critical | An HTTP response executed as code: the classic remote-controlled backdoor. |
-| <a id="fa003"></a>FA003 | low–critical | Byte-escaped strings, `string.char` chains, `_G[...]` lookups and packed lines. Critical when the hidden text is an API name such as `PerformHttpRequest`. |
+| <a id="fa001"></a>FA001 | low–high | `load`, `loadstring`, `dofile`, `eval`, `new Function`, string timers, and loaders reached through `_G`, `window` or aliases. Escalated when the same file makes HTTP requests, lowered for constants and files bundled with the resource. |
+| <a id="fa002"></a>FA002 | critical | An HTTP response executed as code, including through a named callback: the classic remote-controlled backdoor. |
+| <a id="fa003"></a>FA003 | low–critical | Byte-escaped strings, `string.char` chains, `_G[...]` lookups, packed lines, invisible characters and Trojan Source bidirectional controls. Critical when the hidden text is an API name such as `PerformHttpRequest`. |
 | <a id="fa004"></a>FA004 | medium–critical | Discord webhooks and bot tokens, GitHub, Stripe, AWS and Slack keys, private keys, `sv_licenseKey`, Steam Web API keys, database passwords. Values are redacted in every report. |
-| <a id="fa005"></a>FA005 | high | oxmysql, mysql-async and ghmattimysql queries built with `..`, `string.format` or template literals instead of `?` placeholders. |
-| <a id="fa006"></a>FA006 | medium–high | `RegisterNetEvent` / `onNet` handlers that pass client arguments into money, item, weapon, job or permission functions. |
-| <a id="fa007"></a>FA007 | medium–critical | `os.execute`, `io.popen`, raw file access, `child_process`, and `ExecuteCommand` built from runtime values. |
-| <a id="fa008"></a>FA008 | low–critical | Requests to known backdoor panels, paste sites, tunnels and raw public IP addresses. |
+| <a id="fa005"></a>FA005 | high | oxmysql, mysql-async and ghmattimysql queries built with `..`, `string.format` or template literals instead of `?` placeholders, including queries assembled in a variable first. |
+| <a id="fa006"></a>FA006 | medium–high | `RegisterNetEvent` / `onNet` handlers that pass client arguments, directly or through local copies, into money, item, weapon, job or permission functions. Removal functions count too: a negative amount turns `removeMoney` into free money. Downgraded only when the flowing value itself is checked. |
+| <a id="fa007"></a>FA007 | medium–critical | `os.execute`, `io.popen`, file access, `child_process`, native process bindings, and `ExecuteCommand` built from runtime values. |
+| <a id="fa008"></a>FA008 | low–critical | Requests to known backdoor panels, paste sites, tunnels, request capture services, IP loggers and raw public IP addresses, in code and in HTML attributes. |
 | <a id="fa009"></a>FA009 | info | Deprecated `__resource.lua` manifests. |
+| <a id="fa010"></a>FA010 | medium–high | `RegisterCommand` with `restricted = false` that gives money, items or jobs, or runs console commands, without any permission check. |
+| <a id="fa011"></a>FA011 | medium–critical | Reads of `rcon_password`, the database connection string, the license key or other secret convars, and writes to critical server convars. Critical when the file also sends network requests. |
 
 ## Suppressing findings
 
@@ -111,12 +118,14 @@ jobs:
   fivem-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - run: npx --yes github:forbazk/fivem-audit . --format sarif --output fivem-audit.sarif --fail-on none
-      - uses: github/codeql-action/upload-sarif@v3
+      - run: npx --yes github:forbazk/fivem-audit#v0.2.0 . --format sarif --output fivem-audit.sarif --fail-on none
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: fivem-audit.sarif
 ```

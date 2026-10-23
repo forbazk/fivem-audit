@@ -1,14 +1,17 @@
-import { lexJs, lexLua, lexText } from './lexer.ts';
+import { lexHtml, lexJs, lexLua, lexText } from './lexer.ts';
 import type { Language, Position, Side, SourceFile, StringLiteral } from './types.ts';
 
 export interface SourceInit {
   readonly absolutePath: string;
   readonly path: string;
+  readonly uri?: string;
   readonly resource: string;
   readonly language: Language;
   readonly side: Side;
   readonly text: string;
 }
+
+const HTML_FILE = /\.html?$/i;
 
 function lineStarts(text: string): Uint32Array {
   const starts = [0];
@@ -17,7 +20,8 @@ function lineStarts(text: string): Uint32Array {
 }
 
 export function createSource(init: SourceInit): SourceFile {
-  const lexed = init.language === 'lua' ? lexLua(init.text) : init.language === 'js' ? lexJs(init.text) : lexText(init.text);
+  const lexed =
+    init.language === 'lua' ? lexLua(init.text) : init.language === 'text' ? lexText(init.text) : HTML_FILE.test(init.path) ? lexHtml(init.text) : lexJs(init.text);
   const starts = lineStarts(init.text);
   const text = init.text;
 
@@ -113,8 +117,8 @@ function trimSpan(code: string, start: number, end: number): Span {
 
 export function callAt(code: string, nameEnd: number): { open: number; close: number; args: Span[] } | undefined {
   let open = nameEnd;
-  while (open < code.length && /\s/.test(code[open]!)) open++;
-  if (code[open] !== '(') return undefined;
+  while (open < code.length && isSpace(code.charCodeAt(open))) open++;
+  if (code.charCodeAt(open) !== PAREN_OPEN) return undefined;
   const close = matchBracket(code, open);
   if (close === -1) return undefined;
   return { open, close, args: splitArguments(code, open, close) };
