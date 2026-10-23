@@ -17,6 +17,23 @@ export function isMemberCall(code: string, index: number): boolean {
   return j >= 0 && (code[j] === ':' || (code[j] === '.' && code[j - 1] !== '.'));
 }
 
+export function receiverOf(code: string, index: number): string | undefined {
+  let j = index - 1;
+  while (j >= 0 && (code[j] === ' ' || code[j] === '\t')) j--;
+  if (j < 0 || (code[j] !== '.' && code[j] !== ':') || code[j - 1] === '.') return undefined;
+  j--;
+  while (j >= 0 && (code[j] === ' ' || code[j] === '\t')) j--;
+  const end = j + 1;
+  while (j >= 0 && /[\w$]/.test(code[j]!)) j--;
+  return code.slice(j + 1, end) || undefined;
+}
+
+export function isGlobalCall(code: string, index: number, globals: ReadonlySet<string>): boolean {
+  if (!isMemberCall(code, index)) return true;
+  const receiver = receiverOf(code, index);
+  return receiver !== undefined && globals.has(receiver);
+}
+
 export function literalArgument(file: SourceFile, span: Span | undefined): StringLiteral | undefined {
   return span === undefined ? undefined : stringAt(file.strings, span);
 }

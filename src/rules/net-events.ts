@@ -5,9 +5,32 @@ import { identifiersIn, isMemberCall, literalArgument, matches } from './util.ts
 
 const LUA_REGISTER = /\b(RegisterNetEvent|RegisterServerEvent|AddEventHandler)\s*(?=\()/g;
 const JS_REGISTER = /\b(onNet|on)\s*(?=\()/g;
-const SINK = /\b(addMoney|addAccountMoney|AddMoney|setMoney|SetMoney|setAccountMoney|addBank|AddBank|addInventoryItem|AddItem|addItem|giveItem|GiveItem|canCarryItem|addWeapon|AddWeapon|giveWeapon|GiveWeapon|GiveWeaponToPed|setJob|SetJob|setGroup|SetGroup|SetPermission|AddPrincipal|ExecuteCommand|SetPlayerMetaData|setMeta|SetMetaData|addXP|AddXP|addVehicle|SetVehicleOwner|setVehicleOwner)\s*(?=\()/g;
-const GUARD = /\b(?:if|assert)\b[^\n]*(?:source|src|xPlayer|Player|player|amount|count|price|group|job|ace|IsPlayerAceAllowed)/;
+export const SINK = /\b(addMoney|addAccountMoney|AddMoney|removeMoney|RemoveMoney|removeAccountMoney|setMoney|SetMoney|setAccountMoney|addBank|AddBank|removeBank|addInventoryItem|removeInventoryItem|AddItem|RemoveItem|addItem|removeItem|giveItem|GiveItem|canCarryItem|addWeapon|AddWeapon|giveWeapon|GiveWeapon|GiveWeaponToPed|setJob|SetJob|setGroup|SetGroup|SetPermission|AddPrincipal|ExecuteCommand|SetPlayerMetaData|setMeta|SetMetaData|addXP|AddXP|addVehicle|SetVehicleOwner|setVehicleOwner)\s*(?=\()/g;
 const SOURCE_REF = /\b(?:source|src|playerId|_source)\b/;
+const ASSIGNMENT = /(?:\blocal\s+|\b(?:const|let|var)\s+)?([A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*)\s*=(?!=)([^\n;]*)/g;
+const CHECK = /\b(?:if|elseif|assert|while|until|tonumber|math\s*\.\s*(?:floor|ceil|min|max|abs|clamp)|type|typeof|Number\.isInteger|Number\.isFinite|parseInt|Math\.(?:floor|min|max|abs|trunc))\b/;
+
+function taint(code: string, body: Span, params: readonly string[]): Set<string> {
+  const tainted = new Set(params);
+  const text = code.slice(body.start, body.end);
+  for (let round = 0; round < 5; round++) {
+    const size = tainted.size;
+    ASSIGNMENT.lastIndex = 0;
+    for (let m = ASSIGNMENT.exec(text); m !== null; m = ASSIGNMENT.exec(text)) {
+      const value = m[2]!;
+      const sources = value.match(/[A-Za-z_$][\w$]*/g) ?? [];
+      if (!sources.some((id) => tainted.has(id))) continue;
+      for (const name of m[1]!.split(',')) tainted.add(name.trim());
+    }
+    if (tainted.size === size) break;
+  }
+  return tainted;
+}
+
+function validates(before: string, used: readonly string[]): boolean {
+  const names = new RegExp(`(?<![\\w$.:])(?:${used.map((u) => u.replace(/\$/g, '\\$')).join('|')})(?![\\w$])`);
+  return before.split('\n').some((line) => CHECK.test(line) && names.test(line));
+}
 
 interface Handler {
   readonly name: string;
@@ -74,14 +97,14 @@ export const netEvents: Rule = {
     const handlers = file.language === 'lua' ? luaHandlers(file) : jsHandlers(file);
     for (const handler of handlers) {
       if (handler.params.length === 0) continue;
-      const params = new Set(handler.params);
+      const tainted = taint(file.code, handler.body, handler.params);
       for (const sink of matches(file.code, SINK, handler.body.start, handler.body.end)) {
         const call = callAt(file.code, sink.index + sink[0].length);
         if (call === undefined || call.close > handler.body.end) continue;
-        const used = [...identifiersIn(file.code, { start: call.open, end: call.close })].filter((id) => params.has(id));
+        const used = [...identifiersIn(file.code, { start: call.open, end: call.close })].filter((id) => tainted.has(id));
         if (used.length === 0) continue;
         const before = file.code.slice(handler.body.start, sink.index);
-        const guarded = GUARD.test(before);
+        const guarded = validates(before, used);
         const checksSource = SOURCE_REF.test(before);
         report({
           offset: sink.index,

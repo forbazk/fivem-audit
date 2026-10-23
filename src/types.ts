@@ -32,6 +32,7 @@ export interface Position {
 export interface SourceFile {
   readonly absolutePath: string;
   readonly path: string;
+  readonly uri?: string;
   readonly resource: string;
   readonly language: Language;
   readonly side: Side;
@@ -48,6 +49,7 @@ export interface Finding {
   readonly message: string;
   readonly resource: string;
   readonly file: string;
+  readonly uri: string;
   readonly line: number;
   readonly column: number;
   readonly snippet: string;
@@ -88,10 +90,18 @@ export interface ScanStats {
   readonly durationMs: number;
 }
 
+export type SkipReason = 'too-large' | 'binary' | 'unreadable';
+
+export interface SkippedFile {
+  readonly path: string;
+  readonly reason: SkipReason;
+}
+
 export interface ScanResult {
   readonly roots: readonly string[];
   readonly resources: readonly ResourceResult[];
   readonly findings: readonly Finding[];
+  readonly skipped: readonly SkippedFile[];
   readonly stats: ScanStats;
 }
 

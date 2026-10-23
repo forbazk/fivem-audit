@@ -65,7 +65,7 @@ export function formatSarif(result: ScanResult): string {
             locations: [
               {
                 physicalLocation: {
-                  artifactLocation: { uri: encodeURI(f.file) },
+                  artifactLocation: { uri: encodeURI(f.uri) },
                   region: { startLine: f.line, startColumn: f.column },
                 },
               },

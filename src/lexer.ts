@@ -5,13 +5,29 @@ export interface Lexed {
   readonly strings: StringLiteral[];
 }
 
-const NEWLINE = 10;
 const SPACE = ' ';
 
-function blank(source: string, from: number, to: number, out: string[]): void {
-  for (let i = from; i < to; i++) {
-    out[i] = source.charCodeAt(i) === NEWLINE ? '\n' : SPACE;
+function blankText(segment: string): string {
+  return segment.replace(/[^\n]/g, SPACE);
+}
+
+function lineEnd(source: string, from: number): number {
+  const at = source.indexOf('\n', from);
+  return at === -1 ? source.length : at;
+}
+
+function quotedEnd(source: string, from: number, quote: string): number {
+  let j = from;
+  while (j < source.length) {
+    const c = source[j];
+    if (c === '\\') {
+      j += 2;
+      continue;
+    }
+    if (c === quote || c === '\n') break;
+    j++;
   }
+  return Math.min(j, source.length);
 }
 
 function longBracketLevel(source: string, index: number): number {
@@ -26,11 +42,38 @@ function findLongClose(source: string, from: number, level: number): { contentEn
   return at === -1 ? { contentEnd: source.length, end: source.length } : { contentEnd: at, end: at + level + 2 };
 }
 
-function decodeLuaEscapes(raw: string): { value: string; escapes: number } {
+const SIMPLE_ESCAPES: Readonly<Record<string, string>> = {
+  n: '\n',
+  t: '\t',
+  r: '\r',
+  a: '\x07',
+  b: '\b',
+  f: '\f',
+  v: '\v',
+  '\\': '\\',
+  '"': '"',
+  "'": "'",
+  '`': '`',
+  '\n': '\n',
+};
+
+interface Decoded {
+  readonly value: string;
+  readonly escapes: number;
+}
+
+function codePoint(hex: string, max: number): string | undefined {
+  if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length > max) return undefined;
+  const cp = parseInt(hex, 16);
+  return cp <= 0x10ffff ? String.fromCodePoint(cp) : '';
+}
+
+function decodeLuaEscapes(raw: string): Decoded {
+  if (!raw.includes('\\')) return { value: raw, escapes: 0 };
   let value = '';
   let escapes = 0;
   for (let i = 0; i < raw.length; i++) {
-    const ch = raw[i];
+    const ch = raw[i]!;
     if (ch !== '\\') {
       value += ch;
       continue;
@@ -38,32 +81,23 @@ function decodeLuaEscapes(raw: string): { value: string; escapes: number } {
     const next = raw[i + 1];
     if (next === undefined) break;
     if (next >= '0' && next <= '9') {
-      let digits = next;
-      let j = i + 2;
-      while (digits.length < 3 && raw[j] !== undefined && raw[j]! >= '0' && raw[j]! <= '9') {
-        digits += raw[j];
-        j++;
-      }
+      const digits = /^\d{1,3}/.exec(raw.slice(i + 1, i + 4))![0];
       value += String.fromCharCode(Number(digits) & 0xff);
       escapes++;
-      i = j - 1;
+      i += digits.length;
       continue;
     }
-    if (next === 'x') {
-      const hex = raw.slice(i + 2, i + 4);
-      if (/^[0-9a-fA-F]{2}$/.test(hex)) {
-        value += String.fromCharCode(parseInt(hex, 16));
-        escapes++;
-        i += 3;
-        continue;
-      }
+    if (next === 'x' && /^[0-9a-fA-F]{2}$/.test(raw.slice(i + 2, i + 4))) {
+      value += String.fromCharCode(parseInt(raw.slice(i + 2, i + 4), 16));
+      escapes++;
+      i += 3;
+      continue;
     }
     if (next === 'u' && raw[i + 2] === '{') {
       const end = raw.indexOf('}', i + 3);
-      const hex = end === -1 ? '' : raw.slice(i + 3, end);
-      if (/^[0-9a-fA-F]{1,8}$/.test(hex)) {
-        const cp = parseInt(hex, 16);
-        value += cp <= 0x10ffff ? String.fromCodePoint(cp) : '';
+      const decoded = end === -1 ? undefined : codePoint(raw.slice(i + 3, end), 8);
+      if (decoded !== undefined) {
+        value += decoded;
         escapes++;
         i = end;
         continue;
@@ -81,98 +115,55 @@ function decodeLuaEscapes(raw: string): { value: string; escapes: number } {
   return { value, escapes };
 }
 
-const SIMPLE_ESCAPES: Readonly<Record<string, string>> = {
-  n: '\n',
-  t: '\t',
-  r: '\r',
-  a: '\x07',
-  b: '\b',
-  f: '\f',
-  v: '\v',
-  '\\': '\\',
-  '"': '"',
-  "'": "'",
-  '\n': '\n',
-};
-
-function decodeJsEscapes(raw: string): { value: string; escapes: number } {
+function decodeJsEscapes(raw: string): Decoded {
+  if (!raw.includes('\\')) return { value: raw, escapes: 0 };
   let value = '';
   let escapes = 0;
   for (let i = 0; i < raw.length; i++) {
-    const ch = raw[i];
+    const ch = raw[i]!;
     if (ch !== '\\') {
       value += ch;
       continue;
     }
     const next = raw[i + 1];
     if (next === undefined) break;
-    if (next === 'x') {
-      const hex = raw.slice(i + 2, i + 4);
-      if (/^[0-9a-fA-F]{2}$/.test(hex)) {
-        value += String.fromCharCode(parseInt(hex, 16));
-        escapes++;
-        i += 3;
-        continue;
-      }
+    if (next === 'x' && /^[0-9a-fA-F]{2}$/.test(raw.slice(i + 2, i + 4))) {
+      value += String.fromCharCode(parseInt(raw.slice(i + 2, i + 4), 16));
+      escapes++;
+      i += 3;
+      continue;
     }
     if (next === 'u') {
       if (raw[i + 2] === '{') {
         const end = raw.indexOf('}', i + 3);
-        const hex = end === -1 ? '' : raw.slice(i + 3, end);
-        if (/^[0-9a-fA-F]{1,6}$/.test(hex)) {
-          const cp = parseInt(hex, 16);
-          value += cp <= 0x10ffff ? String.fromCodePoint(cp) : '';
+        const decoded = end === -1 ? undefined : codePoint(raw.slice(i + 3, end), 6);
+        if (decoded !== undefined) {
+          value += decoded;
           escapes++;
           i = end;
           continue;
         }
-      } else {
-        const hex = raw.slice(i + 2, i + 6);
-        if (/^[0-9a-fA-F]{4}$/.test(hex)) {
-          value += String.fromCharCode(parseInt(hex, 16));
-          escapes++;
-          i += 5;
-          continue;
-        }
+      } else if (/^[0-9a-fA-F]{4}$/.test(raw.slice(i + 2, i + 6))) {
+        value += String.fromCharCode(parseInt(raw.slice(i + 2, i + 6), 16));
+        escapes++;
+        i += 5;
+        continue;
       }
     }
     if (next >= '0' && next <= '7') {
-      let digits = next;
-      let j = i + 2;
-      while (digits.length < 3 && raw[j] !== undefined && raw[j]! >= '0' && raw[j]! <= '7') {
-        digits += raw[j];
-        j++;
-      }
+      const digits = /^[0-7]{1,3}/.exec(raw.slice(i + 1, i + 4))![0];
       value += String.fromCharCode(parseInt(digits, 8) & 0xff);
       escapes++;
-      i = j - 1;
+      i += digits.length;
       continue;
     }
-    value += SIMPLE_ESCAPES[next] ?? (next === '0' ? '\0' : next);
+    value += SIMPLE_ESCAPES[next] ?? next;
     i++;
   }
   return { value, escapes };
 }
 
 const LUA_TOKEN = /--|["'[]/g;
-
-function blankText(segment: string): string {
-  return segment.replace(/[^\n]/g, SPACE);
-}
-
-function quotedEnd(source: string, from: number, quote: string): number {
-  let j = from;
-  while (j < source.length) {
-    const c = source[j];
-    if (c === '\\') {
-      j += 2;
-      continue;
-    }
-    if (c === quote || c === '\n') break;
-    j++;
-  }
-  return Math.min(j, source.length);
-}
 
 export function lexLua(source: string): Lexed {
   const parts: string[] = [];
@@ -200,7 +191,7 @@ export function lexLua(source: string): Lexed {
       const contentEnd = quotedEnd(source, i + 1, tok);
       end = source[contentEnd] === tok ? contentEnd + 1 : contentEnd;
       const raw = source.slice(i + 1, contentEnd);
-      const decoded = raw.includes('\\') ? decodeLuaEscapes(raw) : { value: raw, escapes: 0 };
+      const decoded = decodeLuaEscapes(raw);
       strings.push({ start: i, end, contentStart: i + 1, contentEnd, value: decoded.value, escapes: decoded.escapes, template: false });
       parts.push(source.slice(last, i + 1), blankText(raw), source.slice(contentEnd, end));
     }
@@ -211,12 +202,7 @@ export function lexLua(source: string): Lexed {
   return { code: parts.join(''), strings };
 }
 
-function lineEnd(source: string, from: number): number {
-  const at = source.indexOf('\n', from);
-  return at === -1 ? source.length : at;
-}
-
-const REGEX_PRECEDERS = new Set(['', '(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';', '+', '-', '*', '%', '<', '>', '~', '^']);
+const REGEX_PRECEDERS = new Set(['(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';', '+', '-', '*', '%', '<', '>', '~', '^']);
 const REGEX_KEYWORDS = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await']);
 
 function regexAllowed(source: string, index: number): boolean {
@@ -233,123 +219,124 @@ function regexAllowed(source: string, index: number): boolean {
   return false;
 }
 
+function regexEnd(source: string, from: number): number {
+  let inClass = false;
+  for (let j = from; j < source.length; j++) {
+    const c = source[j];
+    if (c === '\n') return -1;
+    if (c === '\\') {
+      j++;
+      continue;
+    }
+    if (c === '[') inClass = true;
+    else if (c === ']') inClass = false;
+    else if (c === '/' && !inClass) return j;
+  }
+  return -1;
+}
+
+const JS_TOKEN = /\/\/|\/\*|["'`/{}]/g;
+
 export function lexJs(source: string): Lexed {
-  const out = source.split('');
+  const parts: string[] = [];
   const strings: StringLiteral[] = [];
-  const length = source.length;
-  const templateStack: number[] = [];
+  const templateDepths: number[] = [];
+  const token = new RegExp(JS_TOKEN.source, 'g');
   let braceDepth = 0;
-  let i = 0;
+  let last = 0;
+
+  const flush = (to: number): void => {
+    parts.push(source.slice(last, to));
+    last = to;
+  };
+
+  const blankRange = (from: number, to: number): void => {
+    flush(from);
+    parts.push(blankText(source.slice(from, to)));
+    last = to;
+  };
 
   const readTemplate = (from: number): number => {
     let j = from;
-    let segmentStart = from;
-    while (j < length) {
+    while (j < source.length) {
       const c = source[j];
       if (c === '\\') {
         j += 2;
         continue;
       }
-      if (c === '`') {
-        pushTemplate(segmentStart, j, j + 1);
-        return j + 1;
-      }
-      if (c === '$' && source[j + 1] === '{') {
-        pushTemplate(segmentStart, j, j);
-        templateStack.push(braceDepth);
-        braceDepth = 0;
-        return j + 2;
-      }
+      if (c === '`' || (c === '$' && source[j + 1] === '{')) break;
       j++;
     }
-    pushTemplate(segmentStart, length, length);
-    return length;
-  };
-
-  const pushTemplate = (contentStart: number, contentEnd: number, end: number): void => {
-    const decoded = decodeJsEscapes(source.slice(contentStart, contentEnd));
-    strings.push({ start: contentStart - 1, end, contentStart, contentEnd, value: decoded.value, escapes: decoded.escapes, template: true });
-    blank(source, contentStart, contentEnd, out);
-  };
-
-  while (i < length) {
-    const ch = source[i];
-    const next = source[i + 1];
-    if (ch === '/' && next === '/') {
-      const end = lineEnd(source, i);
-      blank(source, i, end, out);
-      i = end;
-      continue;
+    const contentEnd = Math.min(j, source.length);
+    const raw = source.slice(from, contentEnd);
+    const decoded = decodeJsEscapes(raw);
+    const closing = source[contentEnd] === '`';
+    strings.push({ start: from - 1, end: closing ? contentEnd + 1 : contentEnd, contentStart: from, contentEnd, value: decoded.value, escapes: decoded.escapes, template: true });
+    blankRange(from, contentEnd);
+    if (closing) return contentEnd + 1;
+    if (contentEnd < source.length) {
+      templateDepths.push(braceDepth);
+      braceDepth = 0;
+      return contentEnd + 2;
     }
-    if (ch === '/' && next === '*') {
+    return contentEnd;
+  };
+
+  for (let m = token.exec(source); m !== null; m = token.exec(source)) {
+    const i = m.index;
+    const tok = m[0];
+    let next = i + tok.length;
+    if (tok === '//') {
+      next = lineEnd(source, i);
+      blankRange(i, next);
+    } else if (tok === '/*') {
       const close = source.indexOf('*/', i + 2);
-      const end = close === -1 ? length : close + 2;
-      blank(source, i, end, out);
-      i = end;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      let j = i + 1;
-      while (j < length) {
-        const c = source[j];
-        if (c === '\\') {
-          j += 2;
-          continue;
-        }
-        if (c === ch || c === '\n') break;
-        j++;
-      }
-      const contentEnd = Math.min(j, length);
-      const end = source[contentEnd] === ch ? contentEnd + 1 : contentEnd;
+      next = close === -1 ? source.length : close + 2;
+      blankRange(i, next);
+    } else if (tok === '"' || tok === "'") {
+      const contentEnd = quotedEnd(source, i + 1, tok);
+      next = source[contentEnd] === tok ? contentEnd + 1 : contentEnd;
       const decoded = decodeJsEscapes(source.slice(i + 1, contentEnd));
-      strings.push({ start: i, end, contentStart: i + 1, contentEnd, value: decoded.value, escapes: decoded.escapes, template: false });
-      blank(source, i + 1, contentEnd, out);
-      i = end;
-      continue;
-    }
-    if (ch === '`') {
-      i = readTemplate(i + 1);
-      continue;
-    }
-    if (ch === '{') {
+      strings.push({ start: i, end: next, contentStart: i + 1, contentEnd, value: decoded.value, escapes: decoded.escapes, template: false });
+      blankRange(i + 1, contentEnd);
+    } else if (tok === '`') {
+      next = readTemplate(i + 1);
+    } else if (tok === '{') {
       braceDepth++;
-      i++;
-      continue;
-    }
-    if (ch === '}') {
-      if (braceDepth === 0 && templateStack.length > 0) {
-        braceDepth = templateStack.pop()!;
-        i = readTemplate(i + 1);
-        continue;
+    } else if (tok === '}') {
+      if (braceDepth === 0 && templateDepths.length > 0) {
+        braceDepth = templateDepths.pop()!;
+        next = readTemplate(i + 1);
+      } else {
+        braceDepth = Math.max(0, braceDepth - 1);
       }
-      braceDepth = Math.max(0, braceDepth - 1);
-      i++;
-      continue;
-    }
-    if (ch === '/' && regexAllowed(source, i)) {
-      let j = i + 1;
-      let inClass = false;
-      while (j < length) {
-        const c = source[j];
-        if (c === '\n') break;
-        if (c === '\\') {
-          j += 2;
-          continue;
-        }
-        if (c === '[') inClass = true;
-        else if (c === ']') inClass = false;
-        else if (c === '/' && !inClass) break;
-        j++;
-      }
-      if (source[j] === '/') {
-        blank(source, i + 1, j, out);
-        i = j + 1;
-        continue;
+    } else if (regexAllowed(source, i)) {
+      const end = regexEnd(source, i + 1);
+      if (end !== -1) {
+        blankRange(i + 1, end);
+        next = end + 1;
       }
     }
-    i++;
+    token.lastIndex = next;
   }
-  return { code: out.join(''), strings };
+  flush(source.length);
+  return { code: parts.join(''), strings };
+}
+
+const SCRIPT_BLOCK = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi;
+
+export function lexHtml(source: string): Lexed {
+  const parts: string[] = [];
+  let last = 0;
+  SCRIPT_BLOCK.lastIndex = 0;
+  for (let m = SCRIPT_BLOCK.exec(source); m !== null; m = SCRIPT_BLOCK.exec(source)) {
+    const bodyStart = m.index + m[0].indexOf('>') + 1;
+    const bodyEnd = bodyStart + m[1]!.length;
+    parts.push(blankText(source.slice(last, bodyStart)), source.slice(bodyStart, bodyEnd));
+    last = bodyEnd;
+  }
+  parts.push(blankText(source.slice(last)));
+  return lexJs(parts.join(''));
 }
 
 export function lexText(source: string): Lexed {

@@ -16,13 +16,16 @@ jobs:
   test:
     name: Node ${{ matrix.node }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         node: [22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -30,9 +33,35 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - run: node dist/cli.js examples --fail-on none
       - name: Detects the vulnerable example
         run: |
           if node dist/cli.js examples --fail-on critical > /dev/null; then
             echo "expected critical findings in examples/" && exit 1
           fi
+      - name: Scans itself cleanly
+        run: node dist/cli.js src --fail-on low
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: matrix.node == 24
+        with:
+          name: dist
+          path: dist
+          retention-days: 1
+
+  runtime:
+    name: Runtime on Node 20
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
+      - run: node dist/cli.js --version
+      - run: node dist/cli.js examples --format sarif --fail-on none > report.sarif && node -e "JSON.parse(require('fs').readFileSync('report.sarif','utf8'))"
