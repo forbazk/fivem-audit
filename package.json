@@ -1,0 +1,54 @@
+{
+  "name": "fivem-audit",
+  "version": "0.1.0",
+  "description": "Static security scanner for FiveM resources: backdoors, exploitable net events, SQL injection, leaked secrets and obfuscated code.",
+  "license": "MIT",
+  "author": "BAZ",
+  "type": "module",
+  "bin": {
+    "fivem-audit": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "fivem",
+    "cfx",
+    "security",
+    "scanner",
+    "static-analysis",
+    "backdoor",
+    "lua",
+    "sarif"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-reporter=spec \"test/**/*.test.ts\"",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/forbazk/fivem-audit.git"
+  },
+  "homepage": "https://github.com/forbazk/fivem-audit#readme",
+  "bugs": {
+    "url": "https://github.com/forbazk/fivem-audit/issues"
+  }
+}
